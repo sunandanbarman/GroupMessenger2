@@ -46,7 +46,7 @@ public class GroupMessengerActivity extends Activity {
     //static final String TAG      = GroupMessengerActivity.class.getName();
     static final String TAG      = "TAG"; //TODO : Remove later
     static final int msgLength   = 255;
-    static final int TIMEOUT     = 500;
+    static final int TIMEOUT     = 1000;
 
     static public String myPort  = "";
     private Socket clientSocket  = null;
@@ -377,13 +377,26 @@ public class GroupMessengerActivity extends Activity {
                     //serverSocket.setSoTimeout(TIMEOUT);
                     clientSocket = serverSocket.accept();
                     //clientSocket.setSoTimeout(TIMEOUT);
-                    Log.e(TAG, "client socket accepted");
+                    Log.e(TAG, "client socket accepted from " + clientSocket.getPort());
                     try {
+                        /* Write ACK to sender for implementing timeout facility on sender side*/
+                        /*Log.e(TAG,"To send ACK now");
+                        String reply;
+                        outputStream = clientSocket.getOutputStream();
+                        dataOutputStream = new DataOutputStream(outputStream);
+                        Message temp= new Message (HEARTBEART,myPort,String.valueOf(clientSocket.getPort()),0,HEARTBEART,processPortMap.get(myPort),
+                                                   0,0); // in step 1, no sequence number is required to be sent
+                        reply = temp.deconstructMessage();
+                        dataOutputStream.write(reply.getBytes());
+                        dataOutputStream.flush();
+                        Log.e(TAG,"Wait for actual message");
+                        */
                         inputStream     = clientSocket.getInputStream();
                         dataInputStream = new DataInputStream(inputStream);
                         incomingBuffer  = new byte[msgLength]; //assumed max length
                         dataInputStream.read(incomingBuffer);
 
+                        Log.e(TAG,"message found " + new String(incomingBuffer));
 
                         message = new Message();
                         message.reconstructMessage(new String(incomingBuffer));
@@ -395,11 +408,6 @@ public class GroupMessengerActivity extends Activity {
                             Log.e(TAG, message.toString());
                         }
 
-                        /* Write ACK to sender for implementing timeout facility on sender side*/
-                        String ACK = "ACK";
-                        outputStream = clientSocket.getOutputStream();
-                        dataOutputStream = new DataOutputStream(outputStream);
-                        dataOutputStream.write(ACK.getBytes());
                         clientSocket.close();
 
                         /** We have now received proposed sequence number, lets reply to it with our agreed upon sequence number !**/
@@ -494,7 +502,7 @@ public class GroupMessengerActivity extends Activity {
                 Log.e(TAG,"remotePort  : " +
                         serverSocket.getLocalPort() + " : " +
                         serverSocket.getLocalSocketAddress());
-
+                detectFailedClient();
                 Log.e(TAG,"Exception in serverSocket.accept " + e.getMessage());
                 e.printStackTrace();
             }
@@ -651,6 +659,14 @@ public class GroupMessengerActivity extends Activity {
                             Integer.parseInt(remotePort));
 
                     socket.setSoTimeout(TIMEOUT);
+
+                    /* Once we get here we know remote is alive*/
+                    // this is required to check whether receiver is alive or not
+                    /*inputStream     = socket.getInputStream();
+                    dataInputStream = new DataInputStream(inputStream);
+                    incomingBuffer  = new byte[msgLength]; //assumed max length
+                    dataInputStream.read(incomingBuffer);*/
+
                     temp = new Message(message);
                     temp.remotePort = remotePort; // set remotePort to the intended recipient, helps in debugging
 
@@ -659,12 +675,6 @@ public class GroupMessengerActivity extends Activity {
                     dataOutputStream = new DataOutputStream(outputStream);
                     dataOutputStream.write(temp.deconstructMessage().getBytes());
 
-                    /* Once we get here we know remote is alive*/
-                    // this is required to check whether receiver is alive or not
-                    inputStream     = clientSocket.getInputStream();
-                    dataInputStream = new DataInputStream(inputStream);
-                    incomingBuffer  = new byte[msgLength]; //assumed max length
-                    dataInputStream.read(incomingBuffer);
 
                     Log.e("sendMessageBroadcast ", "Message " + message.toString() + " sent !");
                     socket.close();
@@ -721,17 +731,19 @@ public class GroupMessengerActivity extends Activity {
 
                 Socket socket = new Socket( InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(message.originPort));
                 socket.setSoTimeout(TIMEOUT);
+
+                /* Once we get here we know remote is alive*/
+                // this is required to check whether receiver is alive or not
+                /*inputStream     = socket.getInputStream();
+                dataInputStream = new DataInputStream(inputStream);
+                incomingBuffer  = new byte[msgLength]; //assumed max length
+                dataInputStream.read(incomingBuffer);*/
+
                 msgToSend = message.deconstructMessage(); //get string representation
                 outputStream = socket.getOutputStream();
                 dataOutputStream = new DataOutputStream(outputStream);
                 dataOutputStream.write(msgToSend.getBytes());
 
-                /* Once we get here we know remote is alive*/
-                // this is required to check whether receiver is alive or not
-                inputStream     = clientSocket.getInputStream();
-                dataInputStream = new DataInputStream(inputStream);
-                incomingBuffer  = new byte[msgLength]; //assumed max length
-                dataInputStream.read(incomingBuffer);
 
 
                 socket.close();
@@ -781,22 +793,27 @@ public class GroupMessengerActivity extends Activity {
                         socket = new Socket(InetAddress.getByAddress(new byte[]{10,0,2,2}),Integer.parseInt(remotePort));
                         socket.setSoTimeout(TIMEOUT);
 
-
+                        /* Once we get here we know remote is alive*/
+                        // this is required to check whether receiver is alive or not
+                        /*Log.e(TAG,"wait for ACK");
+                        inputStream     = socket.getInputStream();
+                        dataInputStream = new DataInputStream(inputStream);
+                        incomingBuffer  = new byte[msgLength]; //assumed max length
+                        dataInputStream.read(incomingBuffer);
+                        Message temp = new Message();
+                        temp.reconstructMessage(new String(incomingBuffer));
+                        Log.e(TAG, "ACK found " + temp.message);
+                        */
                         message= new Message (msgs[0],myPort,remotePort,0,MULTICAST,processPortMap.get(myPort),
                                 processPortMap.get(remotePort),FifoCounterSend[processPortMap.get(remotePort)]); // in step 1, no sequence number is required to be sent
                         msgToSend = message.deconstructMessage();
                         FifoCounterSend[processPortMap.get(remotePort)]++;
 
+                        Log.e(TAG,"to send the actual message");
                         outputStream = socket.getOutputStream();
                         dataOutputStream = new DataOutputStream(outputStream);
                         dataOutputStream.write(msgToSend.getBytes());
 
-                        /* Once we get here we know remote is alive*/
-                        // this is required to check whether receiver is alive or not
-                        inputStream     = clientSocket.getInputStream();
-                        dataInputStream = new DataInputStream(inputStream);
-                        incomingBuffer  = new byte[msgLength]; //assumed max length
-                        dataInputStream.read(incomingBuffer);
 
                         Log.e(TAG, "Process number " + remotePort + " is alive.");
                         Log.e(TAG, "Sending message from " + myPort + " to port " + remotePort + " for seq number agreement");
