@@ -110,8 +110,6 @@ class SQLHelperClass extends  SQLiteOpenHelper{
             Log.e(TAG,"keyData :" + c.getString(keyIndex));
             Log.e(TAG,"valueData :" + c.getString(valueIndex));*/
             //Cursor c = db.query(DB_TABLE,projection,selection,selectionArgs,null,null,sortOrder);
-        } else {
-            Log.e(TAG,"DAMN IT");
         }
         //db.close(); // ContentProvider itself closes the DB connection
         return c;

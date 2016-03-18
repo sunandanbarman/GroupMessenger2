@@ -78,7 +78,7 @@ public class GroupMessengerProvider extends ContentProvider {
     }
 
     @Override
-    public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
+    public synchronized  Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
                         String sortOrder) {
         /*
          * TODO: You need to implement this method. Note that you need to return a Cursor object

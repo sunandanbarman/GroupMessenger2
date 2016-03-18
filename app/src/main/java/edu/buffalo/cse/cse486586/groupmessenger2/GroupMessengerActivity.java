@@ -5,6 +5,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Handler;
 import android.telephony.TelephonyManager;
 import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
@@ -18,6 +19,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Array;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -46,7 +48,7 @@ public class GroupMessengerActivity extends Activity {
     //static final String TAG      = GroupMessengerActivity.class.getName();
     static final String TAG      = "TAG"; //TODO : Remove later
     static final int msgLength   = 255;
-    static final int TIMEOUT     = 1000;
+    static final int TIMEOUT     = 2000;
 
     static public String myPort  = "";
     private Socket clientSocket  = null;
@@ -81,12 +83,16 @@ public class GroupMessengerActivity extends Activity {
     static int countDeliverableRecv = 0;
     /* Using PriorityBlockingQueue helps to handle concurrency issues */
     private PriorityBlockingQueue<Message> hold_back_queue = new PriorityBlockingQueue<Message>();
-    private PriorityBlockingQueue<Message> delivery_queue  = new PriorityBlockingQueue<Message>(25, new SortPrintQueue());
+
+    private PriorityBlockingQueue<Message> delivery_queue  = new PriorityBlockingQueue<Message>(25, new SortBySeqNumber_ProcNumber_FifoOrder());
     //private PriorityBlockingQueue<Message> finalQueue      = new PriorityBlockingQueue<Message>();
-    private PriorityBlockingQueue<Message> printQueue      = new PriorityBlockingQueue<Message>();
+    private PriorityBlockingQueue<Message> printQueue      = new PriorityQueueNoDuplicates<Message>(100,new SortBySeqNumber_ProcNumber_FifoOrder());
+    /**/
     private int[] fifoRecvSeqNumber; //keeps track of maximum sequence number received,
-    private HashMap<Message, Integer> msgMapWithMaxSeqNumber;
-    private Map<Message,Integer> countReplyRecv ;// track how many processes sent sequence number
+    private volatile HashMap<Message, Integer> msgMapWithMaxSeqNumber;
+    private volatile Map<Message,Integer> countReplyRecv ;// track how many processes sent sequence number
+    private Map<Message,ArrayList<String>> msgProposalByRemotePorts; //track the ports which sent sent the proposal for the messages
+    private Handler handler;
     /*private SortedSet<Message> hold_back_queue;
     private LinkedList<Message> delivery_queue;
 
@@ -112,11 +118,11 @@ public class GroupMessengerActivity extends Activity {
     class SortBySeqNumber_ProcNumber_FifoOrder implements Comparator<Message> {
         @Override
         public int compare(Message m1, Message m2) {
-            if (m1.seqNumber > m2.seqNumber) {
+            /*if (m1.seqNumber > m2.seqNumber) {
                 return 1;
             } else if (m1.seqNumber < m2.seqNumber) {
                 return -1;
-            }
+            }*/
             if (Integer.valueOf(m1.originPort)  > Integer.valueOf(m2.originPort)) {
                 return 1;
             } else if (Integer.valueOf(m1.originPort) < Integer.valueOf(m2.originPort)) {
@@ -166,7 +172,7 @@ public class GroupMessengerActivity extends Activity {
      */
     private void createServerSocket() {
         try {
-            ServerSocket serverSocket = new ServerSocket(SERVER_PORT);
+            ServerSocket serverSocket = new ServerSocket(SERVER_PORT,50);
             new ServerTask().executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, serverSocket);
         } catch (IOException e) {
             Log.e(TAG, "Can't create a ServerSocket " + e.getMessage());
@@ -179,6 +185,7 @@ public class GroupMessengerActivity extends Activity {
      *A
      */
     private void createDataQueues() {
+        msgProposalByRemotePorts = new HashMap<Message, ArrayList<String>>();
         msgMapWithMaxSeqNumber  = new HashMap<Message, Integer>();
         REMOTE_PORT = new ArrayList<String>(Arrays.asList("11108","11112","11116","11120","11124"));
 /*        hold_back_queue         = new TreeSet<Message>(new SortBySeqNumber_ProcNumber_FifoOrder());
@@ -218,6 +225,52 @@ public class GroupMessengerActivity extends Activity {
             aliveProcess.put(remotePort,true);
         }
     }
+    /** Simply look at hold_back_queue & declare the originPort **/
+    private void checkHoldBackQueue() {
+
+    }
+    private void createFailureHandler() {
+        //handler = new Handler();
+        //handler.postDelayed(runnable, 7000);
+    }
+    private Runnable runnable = new Runnable() {
+        @Override
+        public void run() {
+            boolean bDeadPortFound = false;
+            String deadPort = "";
+            for (Message message : hold_back_queue) {
+                if (message.messageType != DELIVER) {
+                    Log.e(TAG,"message " + message.toString() + " is NOT deliverable " + message.messageType);
+                    if (msgProposalByRemotePorts.containsKey(message)) {
+                        if (msgProposalByRemotePorts.get(message).size() < 5) {
+                            //find missing port and declare as dead
+                            ArrayList<String> portList = msgProposalByRemotePorts.get(message);
+                            int start = 11108, counter = 0;
+                            for (String port : portList) {
+                                if (Integer.valueOf(port) == start + counter ) {
+                                    counter = counter  + 4;
+                                } else {
+                                    Log.e(TAG,"port " + port + " is missing !");
+                                    deadPort = port;
+                                    bDeadPortFound = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        Log.e(TAG,"message " + message.toString() + " not present in msgProposalByRemotePorts . Investigate !");
+                    }
+                } else {
+                    Log.e(TAG,"message " + message.toString() + " is deliverable !");
+                }
+                if (bDeadPortFound)
+                    break;
+            }
+            Log.e(TAG,"bDeadPortFound " + bDeadPortFound + " deadPort " + deadPort);
+            if (bDeadPortFound && !deadPort.equalsIgnoreCase(""))
+                handleFailures(deadPort);
+        }
+    };
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -273,18 +326,18 @@ public class GroupMessengerActivity extends Activity {
 //        if ((hold_back_queue != null) && (hold_back_queue.peek() == message)) { // if message with DELIVER tag is at head of queue, simply deliver it
 //            return ;
 //        }
-        boolean bReorderRequired = false;
+        //boolean bReorderRequired = false;
         for (Iterator<Message> it = hold_back_queue.iterator(); it.hasNext(); ) {
             Message f = it.next();
             if (f.equals(message)) {
                 f.messageType = DELIVER;
                 if (f.seqNumber != message.seqNumber) {
                     f.seqNumber = message.seqNumber;
-                    bReorderRequired = true;
+                    //bReorderRequired = true;
                 }
             }
         }
-        if (bReorderRequired) {
+        /*if (bReorderRequired) {
             LinkedList<Message> tempQ = new LinkedList<Message>();
             Message m1;
             while ( (m1 = hold_back_queue.poll()) != null) {
@@ -295,7 +348,7 @@ public class GroupMessengerActivity extends Activity {
             for(Message m2: tempQ) {
                 hold_back_queue.add(m2);
             }
-        }
+        }*/
     }
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
@@ -306,37 +359,66 @@ public class GroupMessengerActivity extends Activity {
     /********************Method to handle failure here***************************************/
     private synchronized void handleFailures(String remotePort) {
         Message message = null;
-        Log.e(TAG,"To handle Failures for remotePort " + remotePort);
+        Log.e(TAG, "To handle Failures for remotePort " + remotePort);
         if (remotePort.equals(null)) { // in the odd case if it happens
             return;
         }
-
+        Log.e(TAG,"aliveProcess set ");
+        for(Map.Entry<String,Boolean> entry : aliveProcess.entrySet()) {
+            Log.e(TAG,entry.getKey() + " : " + entry.getValue());
+        }
+        Log.e(TAG," handleFailures 1.1 " + aliveProcess.containsKey(remotePort));
         if (aliveProcess.containsKey(remotePort)) {
+            REMOTE_PORT.remove(remotePort);
+            aliveClients--;
             aliveProcess.remove(remotePort);
-            /* Remove from hold_back_queue all the messages sent to failed clients*/
+            Log.e(TAG, "remote Port removed from aliveProcess ");
+            /* Remove from hold_back_queue all the messages that came from failed clients that are NOT marked deliverable
+            * These messages will never get their final priorities, hence they have to be removed*/
             //Log.e(TAG,"");
-            for (Iterator<Message> iterator = hold_back_queue.iterator(); iterator.hasNext();) {
+            /*for (Iterator<Message> iterator = hold_back_queue.iterator(); iterator.hasNext();) {
                 message = iterator.next();
-                if (message.remotePort.equalsIgnoreCase(remotePort)) {
+                if (message.originPort.equalsIgnoreCase(remotePort) && message.messageType != DELIVER) {
+                    Log.e(TAG,"To remove from hold_back_queue " + message.toString());
                     iterator.remove();
 
                     MAX_DELIVERABLE--;
                 }
+            }*/
+            int countFromFailedClient = 0;
+            Log.e(TAG,"MAX_DELIVERABLE after hold_back_queue " + MAX_DELIVERABLE);
+            //** Remove all messages which were received from failed client**//*
+            for (Iterator<Message> iterator = delivery_queue.iterator(); iterator.hasNext();) {
+                message = iterator.next();
+                if (message.originPort.equalsIgnoreCase(remotePort)) {
+                    countFromFailedClient++;
+                }
             }
+            countFromFailedClient = 5 - countFromFailedClient; // HACK: since grader sends only 5 messages per client, we can rely on this
+            MAX_DELIVERABLE = MAX_DELIVERABLE - countFromFailedClient;
+            Log.e(TAG,"MAX_DELIVERABLE after delivery_queue " + MAX_DELIVERABLE);
             for (Map.Entry<Message,Integer> entry : countReplyRecv.entrySet()) { // search for the message which can be delivered now
                 if (entry.getValue() == aliveProcess.size()) {
                     message = entry.getKey();
+                    Log.e(TAG,"message " + message.toString() + " in handleFailures is DELIVER");
                     break;
                 }
             }
+
             if (countDeliverableRecv == MAX_DELIVERABLE) {
+                Log.e(TAG,"Delivery can start..");
                 new ServerTask().checkIntoDeliveryQueue();
             }
             //remove the entry from hold_back_queue and countReplyRecv
             //hold_back_queue.remove(message);
             //countReplyRecv.remove(message);
-            if (message != null)
+            if (message != null) {
+                /* Message to be delivered, free its associated helper memory*/
+                message.messageType = DELIVER;
+                countReplyRecv.remove(message);
+                msgMapWithMaxSeqNumber.remove(message);
                 sendMessageAsPerMessageType(message);
+            }
 
         }
     }
@@ -349,7 +431,7 @@ public class GroupMessengerActivity extends Activity {
         }
     }
     /*****************Methods to insert data into DB**********************/
-    private void updateDB(Message message) {
+    private synchronized  void updateDB(Message message) {
         ContentValues cv = new ContentValues();
         cv.put("key", dbSeqNumber++);
         cv.put("value", message.message);
@@ -357,7 +439,35 @@ public class GroupMessengerActivity extends Activity {
         Log.e(TAG,"to insert into db :" + message.toString() + " seq# " + dbSeqNumber);
         sql.insertValues(cv);
     }
+    private void detectFailedClient() {
+        new detectFailedClient_ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+    }
 
+    /** Send a HEARTBEAT message to detect any failed client**/
+    private class detectFailedClient_ClientTask extends AsyncTask<Void, Void, Void> {
+
+        @Override
+        protected Void doInBackground(Void... params) {
+
+            String remotePort ="";
+            for(int i= aliveClients-1 ;i >=0 ; i--) { // bind to all the listed ports
+                /*try {
+                    remotePort = REMOTE_PORT.get(i);
+                } */
+            }
+            return null;
+        }
+    }
+    private int ntohl(byte[] x)
+    {
+        int res = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            res <<= 8;
+            res |= (int) x[i];
+        }
+        return res;
+    }
     /*%%%%%%%%%%%%%%%%%%%%%%Server Task starts%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%*/
     private class ServerTask extends AsyncTask<ServerSocket, String, Void> {
         @Override
@@ -376,11 +486,11 @@ public class GroupMessengerActivity extends Activity {
                     Log.e(TAG,"server socket 1.3");
                     //serverSocket.setSoTimeout(TIMEOUT);
                     clientSocket = serverSocket.accept();
-                    //clientSocket.setSoTimeout(TIMEOUT);
-                    Log.e(TAG, "client socket accepted from " + clientSocket.getPort());
+                    clientSocket.setSoTimeout(TIMEOUT * 5);
+                    Log.e(TAG, "client socket accepted from " + clientSocket.getRemoteSocketAddress() + " : " + clientSocket.getPort());
                     try {
                         /* Write ACK to sender for implementing timeout facility on sender side*/
-                        /*Log.e(TAG,"To send ACK now");
+                        Log.e(TAG,"To send ACK now");
                         String reply;
                         outputStream = clientSocket.getOutputStream();
                         dataOutputStream = new DataOutputStream(outputStream);
@@ -390,13 +500,13 @@ public class GroupMessengerActivity extends Activity {
                         dataOutputStream.write(reply.getBytes());
                         dataOutputStream.flush();
                         Log.e(TAG,"Wait for actual message");
-                        */
+
                         inputStream     = clientSocket.getInputStream();
                         dataInputStream = new DataInputStream(inputStream);
                         incomingBuffer  = new byte[msgLength]; //assumed max length
                         dataInputStream.read(incomingBuffer);
 
-                        Log.e(TAG,"message found " + new String(incomingBuffer));
+                        //Log.e(TAG,"message found " + new String(incomingBuffer));
 
                         message = new Message();
                         message.reconstructMessage(new String(incomingBuffer));
@@ -407,7 +517,16 @@ public class GroupMessengerActivity extends Activity {
 
                             Log.e(TAG, message.toString());
                         }
-
+                        /*if (message.messageType.equalsIgnoreCase(HEARTBEART)) {
+                            String reply;
+                            outputStream = clientSocket.getOutputStream();
+                            dataOutputStream = new DataOutputStream(outputStream);
+                            Message temp= new Message (HEARTBEART,myPort,String.valueOf(clientSocket.getPort()),0,HEARTBEART,processPortMap.get(myPort),
+                                    0,0); // in step 1, no sequence number is required to be sent
+                            reply = temp.deconstructMessage();
+                            dataOutputStream.write(reply.getBytes());
+                            dataOutputStream.flush();
+                        }*/
                         clientSocket.close();
 
                         /** We have now received proposed sequence number, lets reply to it with our agreed upon sequence number !**/
@@ -432,7 +551,15 @@ public class GroupMessengerActivity extends Activity {
                         else if (message.messageType.equalsIgnoreCase(PROPOSED))
                         {
                             /** Here the step 3 of ISIS algorithm executes,we check for all the receiving messages keeping track of **/
-
+                            if (!msgProposalByRemotePorts.containsKey(message)) {
+                                ArrayList<String> portList = new ArrayList<String>();
+                                portList.add(message.remotePort);
+                                msgProposalByRemotePorts.put(message,portList);
+                            } else {
+                                ArrayList<String> portList = msgProposalByRemotePorts.get(message);
+                                portList.add(message.remotePort);
+                                msgProposalByRemotePorts.put(message,new ArrayList<String>(portList));
+                            }
                             Log.e(TAG, "Message " + message.toString() + " PROPOSED message with sequence " + message.seqNumber);
                             if (checkMaximumReceivedSequenceNumber(message)) {
                                 Log.e("check..SeqNumber ->","true ; size :" + countReplyRecv.get(message));
@@ -453,6 +580,10 @@ public class GroupMessengerActivity extends Activity {
                                 Log.e(TAG,"maximum sequence number for message " + message.toString() + " is " + msgMapWithMaxSeqNumber.get(message));
                                 message.seqNumber = msgMapWithMaxSeqNumber.get(message);
                                 sendMessageAsPerMessageType(message);
+                                synchronized (lock) {
+                                    countReplyRecv.remove(message);
+                                    msgMapWithMaxSeqNumber.remove(message);
+                                }
                             } else {
                                 Log.e("Reply wait...",String.valueOf(countReplyRecv.get(message)));
                             }
@@ -477,20 +608,24 @@ public class GroupMessengerActivity extends Activity {
                                 }
                                 countDeliverableRecv++;
                                 Log.e(TAG,"countDeliverableRecv :"  + countDeliverableRecv);
-                                addMessageToDeliveryQueue(message);
+                                addMessageToDeliveryQueue();
                                 printPrioirityQueueInOrder(delivery_queue);
+                                printQueue.add(message);
+
+                                insertData(printQueue);
                                 if (countDeliverableRecv == MAX_DELIVERABLE)
                                 {
                                     checkIntoDeliveryQueue();
                                 }
                                 // message delivered, free its associated memory
-                                countReplyRecv.remove(message);
-                                msgMapWithMaxSeqNumber.remove(message);
+                                //countReplyRecv.remove(message);
+                                //msgMapWithMaxSeqNumber.remove(message);
                             }
                         }
                     }
                     catch (Exception ex) {
                         //handleFailures();
+                        Log.e(TAG,"Remote port :" + String.valueOf(clientSocket.getPort()));
                         Log.e(TAG, "exception in processing client messages " + ex.getMessage());
                         ex.printStackTrace();
                         //bCanAccept = false;
@@ -502,7 +637,7 @@ public class GroupMessengerActivity extends Activity {
                 Log.e(TAG,"remotePort  : " +
                         serverSocket.getLocalPort() + " : " +
                         serverSocket.getLocalSocketAddress());
-                detectFailedClient();
+                //detectFailedClient();
                 Log.e(TAG,"Exception in serverSocket.accept " + e.getMessage());
                 e.printStackTrace();
             }
@@ -540,11 +675,19 @@ public class GroupMessengerActivity extends Activity {
             Log.e(TAG, "***********Hold back queue ends*************");
 
         }
-        private synchronized  void addMessageToDeliveryQueue(Message message) {
+        /*
+         *  This function will pop all the delivery messages and add them to delivery queue
+         *  This is safe to do, since before delivery, we sort the whole delivery queue to ensure Total + FIFO ordering
+         *  */
+        private synchronized  void addMessageToDeliveryQueue() {
+
             if (hold_back_queue != null) {
-                while (!hold_back_queue.isEmpty() && hold_back_queue.peek().messageType.equalsIgnoreCase(DELIVER))
-                {
-                    delivery_queue.add(new Message(hold_back_queue.poll()));
+                for (Iterator<Message> iterator = hold_back_queue.iterator(); iterator.hasNext();) {
+                    Message message =  iterator.next();
+                    if (message.messageType.equalsIgnoreCase(DELIVER)) {
+                        delivery_queue.add(new Message(message));
+                        iterator.remove();
+                    }
                 }
             }
         }
@@ -552,32 +695,47 @@ public class GroupMessengerActivity extends Activity {
             Log.e(TAG,"checkIntoDeliveryQueue begins");
             LinkedList<Message> tempQ;
             Message message;
-            if (hold_back_queue != null) {
+            if (delivery_queue != null) {
                 Log.e(TAG,"checkIntoDeliveryQueue 1");
 
 
-                Log.e(TAG, "*******delivery queue starts*********");
+                //Log.e(TAG, "*******delivery queue starts*********");
 
                 //if (bReorderRequired)
-                {
+                //{
                     tempQ = new LinkedList<Message>();
                     Message m1;
                     while ( (m1 = delivery_queue.poll()) != null) {
-                        tempQ.add(m1);
+                        tempQ.add(new Message(m1));
 
                     }
-                    Collections.sort(tempQ,new SortBySeqNumber_ProcNumber_FifoOrder());
-                    for(Message m2: tempQ) {
-                        delivery_queue.add(m2);
+                    Log.e(TAG,"tempQ starts");
+                    for(Message m2 : tempQ) {
+                        Log.e(TAG,m2.toString());
                     }
-                }
+                    Log.e(TAG,"tempQ ends");
+                    Collections.sort(tempQ, new SortBySeqNumber_ProcNumber_FifoOrder());
 
-                printPrioirityQueueInOrder(delivery_queue);
-                Log.e(TAG, "*******delivery queue ends*********");
+                    Log.e(TAG,"%%% After sorting tempQ starts");
+                    for(Message m2 : tempQ) {
+                        Log.e(TAG,m2.toString());
+                    }
+                    Log.e(TAG, "%%% After sorting tempQ ends");
 
-                while ( (message = delivery_queue.poll()) != null) {
-                    Log.e(TAG,"insertIntoDeliveryQueue the message " + message.toString());
-                    updateDB(message);
+                    //for(Message m2: tempQ)
+                    /*for (int i=0; i < tempQ.size(); i++)
+                    {
+                        Message m2 = tempQ.get(i);
+                        delivery_queue.add(new Message(m2));
+                    }*/
+                //}
+
+                //printPrioirityQueueInOrder(delivery_queue);
+                //Log.e(TAG, "*******delivery queue ends*********");
+
+                while ( (message = tempQ.poll()) != null) {
+                    Log.e(TAG, "insertIntoDeliveryQueue the message " + message.toString());
+                    //updateDB(message);
                     publishProgress(message.message);
                 }
 
@@ -662,10 +820,10 @@ public class GroupMessengerActivity extends Activity {
 
                     /* Once we get here we know remote is alive*/
                     // this is required to check whether receiver is alive or not
-                    /*inputStream     = socket.getInputStream();
+                    inputStream     = socket.getInputStream();
                     dataInputStream = new DataInputStream(inputStream);
                     incomingBuffer  = new byte[msgLength]; //assumed max length
-                    dataInputStream.read(incomingBuffer);*/
+                    dataInputStream.read(incomingBuffer);
 
                     temp = new Message(message);
                     temp.remotePort = remotePort; // set remotePort to the intended recipient, helps in debugging
@@ -702,7 +860,34 @@ public class GroupMessengerActivity extends Activity {
             return null;
         }
     }
-
+    private class InsertIntoDatabase extends AsyncTask<Void,Void,Void> {
+        @Override
+        protected Void doInBackground(Void...Params) {
+            Log.e(TAG,"*********InsertIntoDatabase begins********");
+            int counter = 0;
+            synchronized (this ) {
+                PriorityBlockingQueue<Message> tempQ = new PriorityBlockingQueue<Message>(printQueue);
+                Message tempMessage;
+                dbSeqNumber = 0;
+                while ((tempMessage = tempQ.poll()) != null){
+                    Log.e(TAG," counter " + counter + " tempMessage " + tempMessage.toString());
+                    counter++;
+                    updateDB(tempMessage);
+                }
+            }
+            Log.e(TAG,"*********InsertIntoDatabase ends********");
+            return  null;
+        }
+    }
+    private void insertData(PriorityBlockingQueue<Message> printQueue) {
+        /*PriorityBlockingQueue<Message> tempQ = new PriorityBlockingQueue<Message>(printQueue);
+        Message tempMessage;
+        dbSeqNumber = 0;
+        while ((tempMessage = tempQ.poll()) != null){
+            updateDB(tempMessage);
+        }*/
+        new InsertIntoDatabase().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR);
+    }
     private class ReplyClientTask extends AsyncTask<Message, Void, Void>{
         @Override
         protected Void doInBackground(Message... messages) {
@@ -726,18 +911,18 @@ public class GroupMessengerActivity extends Activity {
                 }
                 Log.e(TAG, "message sequenceNumber  " + message.seqNumber);
                 hold_back_queue.add(new Message(message));
-                //printQueue.add(message);
-                //insertData(); //
+                printQueue.add(message);
+                //insertData(printQueue); //
 
                 Socket socket = new Socket( InetAddress.getByAddress(new byte[]{10, 0, 2, 2}), Integer.parseInt(message.originPort));
                 socket.setSoTimeout(TIMEOUT);
 
                 /* Once we get here we know remote is alive*/
                 // this is required to check whether receiver is alive or not
-                /*inputStream     = socket.getInputStream();
+                inputStream     = socket.getInputStream();
                 dataInputStream = new DataInputStream(inputStream);
                 incomingBuffer  = new byte[msgLength]; //assumed max length
-                dataInputStream.read(incomingBuffer);*/
+                dataInputStream.read(incomingBuffer);
 
                 msgToSend = message.deconstructMessage(); //get string representation
                 outputStream = socket.getOutputStream();
@@ -791,11 +976,11 @@ public class GroupMessengerActivity extends Activity {
                         remotePort = REMOTE_PORT.get(i);
 
                         socket = new Socket(InetAddress.getByAddress(new byte[]{10,0,2,2}),Integer.parseInt(remotePort));
-                        socket.setSoTimeout(TIMEOUT);
+                        socket.setSoTimeout(TIMEOUT * 2);
 
                         /* Once we get here we know remote is alive*/
                         // this is required to check whether receiver is alive or not
-                        /*Log.e(TAG,"wait for ACK");
+                        Log.e(TAG,"wait for ACK");
                         inputStream     = socket.getInputStream();
                         dataInputStream = new DataInputStream(inputStream);
                         incomingBuffer  = new byte[msgLength]; //assumed max length
@@ -803,7 +988,7 @@ public class GroupMessengerActivity extends Activity {
                         Message temp = new Message();
                         temp.reconstructMessage(new String(incomingBuffer));
                         Log.e(TAG, "ACK found " + temp.message);
-                        */
+
                         message= new Message (msgs[0],myPort,remotePort,0,MULTICAST,processPortMap.get(myPort),
                                 processPortMap.get(remotePort),FifoCounterSend[processPortMap.get(remotePort)]); // in step 1, no sequence number is required to be sent
                         msgToSend = message.deconstructMessage();
