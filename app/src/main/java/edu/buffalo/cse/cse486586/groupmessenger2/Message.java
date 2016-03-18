@@ -39,9 +39,7 @@ public class Message implements Serializable, Comparable<Message>{
         Message message1 = (Message) o;
 
         if (originPNum != message1.originPNum) return false;
-//        if (destPNum != message1.destPNum) return false;
         if (!message.equals(message1.message)) return false;
-        //      if (!remotePort.equals(message1.remotePort)) return false;
         return originPort.equals(message1.originPort);
 
     }
@@ -50,8 +48,6 @@ public class Message implements Serializable, Comparable<Message>{
     public int hashCode() {
         int result = message.hashCode();
         result = 31 * result + originPort.hashCode();
-        //result = 31 * result + remotePort.hashCode();
-        //result = 31 * result + destPNum;
         result = 31 * result + originPNum;
         return result;
     }

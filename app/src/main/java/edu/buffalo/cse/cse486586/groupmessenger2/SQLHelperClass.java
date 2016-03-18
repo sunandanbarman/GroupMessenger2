@@ -90,7 +90,6 @@ class SQLHelperClass extends  SQLiteOpenHelper{
         // ensuring key=value is always up-to date
         long newRowID;
         newRowID =db.insertWithOnConflict(DB_TABLE,null,cv,SQLiteDatabase.CONFLICT_REPLACE);
-        //newRowID = db.insert(DB_TABLE,null,cv);
         db.close();
         return newRowID;
     }
@@ -98,20 +97,8 @@ class SQLHelperClass extends  SQLiteOpenHelper{
     public Cursor getData(String[] projection, String selection, String[] selectionArgs,
                           String sortOrder) {
         SQLiteDatabase db = this.getReadableDatabase();
-        //Cursor c = db.rawQuery("SELECT * FROM Data WHERE key = 'key0'", null);
         Cursor c = db.query(DB_TABLE,projection,selection,selectionArgs,null,null,sortOrder);
-        //Log.e(TAG,"Cursor found ");
 
-        if (c!= null) {
-            //c.moveToFirst();
-            //Log.e(TAG, c.getColumnName(0));
-            /*int keyIndex = c.getColumnIndex("key");
-            int valueIndex = c.getColumnIndex("value");
-            Log.e(TAG,"keyData :" + c.getString(keyIndex));
-            Log.e(TAG,"valueData :" + c.getString(valueIndex));*/
-            //Cursor c = db.query(DB_TABLE,projection,selection,selectionArgs,null,null,sortOrder);
-        }
-        //db.close(); // ContentProvider itself closes the DB connection
         return c;
     }
 
